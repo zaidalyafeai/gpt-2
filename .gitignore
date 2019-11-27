@@ -3,3 +3,8 @@ __pycache__
 models/
 checkpoint
 samples
+*.hi
+*.o
+ircbot
+/env
+context.txt

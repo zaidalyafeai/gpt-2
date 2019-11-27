@@ -33,7 +33,9 @@ def main():
     if args.length > hparams.n_ctx:
         raise ValueError("Can't get samples longer than window size: %s" % hparams.n_ctx)
 
-    with tf.Session(graph=tf.Graph()) as sess:
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    with tf.Session(config=config) as sess:
         context = tf.placeholder(tf.int32, [batch_size, None])
         output = sample.sample_sequence(
             hparams=hparams, length=args.length,
@@ -45,7 +47,7 @@ def main():
         saver = tf.train.Saver()
         ckpt = tf.train.latest_checkpoint(os.path.join('models', args.model_name))
         if args.checkpoint:
-            ckpt = tf.train.latest_checkpoint(args.checkpoint)
+            ckpt = tf.train.latest_checkpoint(args.checkpoint) or args.checkpoint
         saver.restore(sess, ckpt)
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -54,7 +56,6 @@ def main():
                 print(self.headers)
                 length = int(self.headers['Content-Length'])
                 raw_text = self.rfile.read(length).decode('utf-8')
-                print(repr(raw_text))
                 context_tokens = enc.encode(raw_text)
                 context_size = min(len(context_tokens), hparams.n_ctx - args.length - 1)
                 context_tokens = context_tokens[-context_size:]
@@ -67,6 +68,7 @@ def main():
                     context: [context_tokens]
                 })[0, context_size:]
                 text = enc.decode(out)
+                print(repr(raw_text), repr(text))
                 self.wfile.write(json.dumps({'text': [text], 'context': enc.decode(context_tokens)}).encode('utf-8'))
         server_address = ('', 8000)
         httpd = http.server.HTTPServer(server_address, Handler)
