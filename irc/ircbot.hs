@@ -130,7 +130,7 @@ sendLine msg
   | totalLength > lengthLimit = sendLine (T.dropEnd overage msg <> "…") >> sendLine ("…" <> T.takeEnd overage msg)
   | otherwise = send (Privmsg kChannel (Right msg))
   where
-    lengthLimit = 510 - 34
+    lengthLimit = 510 - 50
     totalLength = T.length ("PRIVMSG " <> kChannel <> " :" <> msg)
     overage = totalLength - lengthLimit + 3
 
