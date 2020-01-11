@@ -32,6 +32,8 @@ import           LogFormat
 kChannel :: Text
 kChannel = "#lw-gpt"
 
+type Channel = Text
+
 data MyState = MyState {
   _stContext :: Text,
   _stLastWakeup :: Maybe UTCTime,
@@ -81,7 +83,9 @@ getCanSpeak = do
     Nothing -> return False
 
 sampleThread :: IRC MyState ()
-sampleThread = forever $ catch go (\(e :: SomeException) -> liftIO (print e) >> pure ())
+sampleThread = forever (go
+                        `catch` (\(e :: GPT2.Timeout) -> sendLine kChannel "Timed out")
+                        `catch` (\(e :: SomeException) -> liftIO (print e)))
   where
     feepbot = do
       hasLink <- use stHasLink
@@ -90,9 +94,15 @@ sampleThread = forever $ catch go (\(e :: SomeException) -> liftIO (print e) >> 
       ctx <- use stContext
       let
         prompt = Msg (formatTimestamp now) "feepbot" ""
-      (newctx, msg) <- liftIO (sampleMessageWithPrompt ctx prompt)
+        go = do
+          (newctx, msg) <- sampleMessageWithPrompt ctx prompt
+          if ("Wikipedia" `T.isSuffixOf` mtext msg) then
+            putStrLn ("redrawing " ++ show msg) >> go
+            else
+            return (newctx, msg)
+      (newctx, msg) <- liftIO go
       stContext .= (newctx <> formatMsg msg <> "\n")
-      sendMsg msg
+      sendMsg kChannel msg
       stHasLink %= subtract 1
       stLastChat .= now
 
@@ -106,7 +116,7 @@ sampleThread = forever $ catch go (\(e :: SomeException) -> liftIO (print e) >> 
 
       now <- liftIO getCurrentTime
       let msg' = msg{mtime = formatTimestamp now}
-      sendMsg msg'
+      sendMsg kChannel msg'
       extendContext msg'
       stLastChat .= now
 
@@ -122,28 +132,34 @@ noping us
 cleanzwsp :: Text -> Text
 cleanzwsp = T.filter (/= '\x2060')
 
-sendMsg :: Msg -> IRC MyState ()
-sendMsg Msg{..} = sendLine ("<" <> noping muser <> "> " <> mtext)
+sendMsg :: Channel -> Msg -> IRC MyState ()
+sendMsg chan Msg{..} = sendLine chan ("<" <> noping muser <> "> " <> mtext)
 
-sendLine :: Text -> IRC MyState ()
-sendLine msg
-  | totalLength > lengthLimit = sendLine (T.dropEnd overage msg <> "…") >> sendLine ("…" <> T.takeEnd overage msg)
-  | otherwise = send (Privmsg kChannel (Right msg))
+sendLine :: Channel -> Text -> IRC MyState ()
+sendLine chan msg
+  | totalLength > lengthLimit = do
+      send (Privmsg chan (Right $ T.dropEnd overage msg <> "…"))
+      sendLine chan ("…" <> T.takeEnd overage msg)
+  | otherwise = send (Privmsg chan (Right msg))
   where
-    lengthLimit = 510 - 34
-    totalLength = T.length ("PRIVMSG " <> kChannel <> " :" <> msg)
+    lengthLimit = 510 - 50
+    totalLength = T.length ("PRIVMSG " <> chan <> " :" <> msg)
     overage = totalLength - lengthLimit + 3
 
-gwernpaste :: Text -> IRC MyState ()
-gwernpaste prompt = flip catch (\(e :: SomeException) -> liftIO (print e) >> pure ()) $ do
-  orig_ctx <- pure "" -- use stContext
-  ls <- liftIO (sampleGwernpaste orig_ctx prompt)
-  for_ ls $ \line -> do
-    sendMsg line
-    extendContext line
+gwernpaste :: Channel -> Text -> IRC MyState ()
+gwernpaste chan prompt = void $ fork (go
+                                      `catch` (\(e :: GPT2.Timeout) -> sendLine kChannel "Timed out")
+                                      `catch` (\(e :: SomeException) -> liftIO (print e)))
+  where
+    go = do
+      orig_ctx <- pure "" -- use stContext
+      ls <- liftIO (sampleGwernpaste orig_ctx prompt)
+      for_ ls $ \line -> do
+        sendMsg chan line
+        extendContext line
 
-completion :: Text -> Text -> IRC MyState ()
-completion user prompt = do
+completion :: Channel -> Text -> Text -> IRC MyState ()
+completion chan user prompt = do
   ctx <- use stContext
   now <- liftIO getCurrentTime
   let lctx = if T.isPrefixOf "<" prompt && T.isInfixOf ">" prompt then
@@ -153,8 +169,16 @@ completion user prompt = do
              else
                Msg (formatTimestamp now) user prompt
   (newctx, msg) <- liftIO (sampleMessageWithPrompt ctx lctx)
-  sendMsg msg
+  sendMsg chan msg
   extendContext msg
+
+getChannel :: Source Text -> Channel
+getChannel (Channel ch u) = ch
+getChannel (User u) = u
+
+getUser :: Source Text -> Text
+getUser (Channel ch u) = u
+getUser (User u) = u
 
 main :: IO ()
 main = do
@@ -195,16 +219,19 @@ main = do
       handleMessage _ (_, Right "gpt2: wake up") = do
         now <- liftIO getCurrentTime
         stLastWakeup .= Just now
-      handleMessage _ (_, Right "@gwernpaste") = gwernpaste ""
-      handleMessage _ (_, Right "@clear") = do
+      handleMessage src (_, Right "@gwernpaste") = gwernpaste (getChannel src) ""
+      handleMessage src (_, Right "@clear") = do
         stContext .= "\n"
-        sendLine ("Forgotten.")
+        sendLine (getChannel src) "Forgotten."
       handleMessage _ (_, Right "@reload") = do
         disconnect
         liftIO exitSuccess
-      handleMessage _ (_, Right msg) | T.isPrefixOf "@gwernpaste " msg = gwernpaste (T.drop (T.length "@gwernpaste ") msg)
-      handleMessage (Channel ch u) (_, Right msg)
-        | T.isPrefixOf "@complete " msg = completion u (cleanzwsp $ T.drop (T.length "@complete ") msg)
+      handleMessage src (_, Right msg)
+        | T.isPrefixOf "@gwernpaste " msg
+        = gwernpaste (getChannel src) (T.drop (T.length "@gwernpaste ") msg)
+      handleMessage src (_, Right msg)
+        | T.isPrefixOf "@complete " msg
+        = completion (getChannel src) (getUser src) (cleanzwsp $ T.drop (T.length "@complete ") msg)
       handleMessage (Channel ch u) (_, Right msg)
         | ch == kChannel
         = do now <- liftIO getCurrentTime
