@@ -3,17 +3,16 @@
 
 module GPT2 where
 
-
-import Data.Time.Clock
-import Data.Time.Format
+import           Control.Applicative
 import           Control.Exception
 import           Control.Lens
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Lens as A
 import           Data.ByteString (ByteString)
 import           Data.Char
-import           Data.List.CommonSubstring
 import           Data.List
+import           Data.List.CommonSubstring
+import           Data.Ord
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -21,11 +20,8 @@ import qualified Data.Text.IO as T
 import qualified Network.Wreq as Wreq
 import           System.Timeout
 
-formatTimestamp :: UTCTime -> Text
-formatTimestamp time = T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" time)
-
 timeoutRetry :: IO a -> IO a
-timeoutRetry m = do ma <- timeout (10 * 1000000) m
+timeoutRetry m = do ma <- timeout (15 * 1000000) m
                     case ma of
                       Just a -> pure a
                       Nothing -> putStrLn "Timed out while sampling chunk, retrying" >> timeoutRetry m
@@ -40,10 +36,12 @@ data Err = Err String
 instance Exception Err
 
 timeoutThrow :: IO a -> IO a
-timeoutThrow m = do ma <- timeout (30 * 1000000) m
+timeoutThrow m = do ma <- timeout (120 * 1000000) m
                     case ma of
                       Just a -> pure a
                       Nothing -> putStrLn "Timed out while sampling" >> throwIO Timeout
+
+(|||) = liftA2 (||)
 
 sampleChunk :: Text -> IO (Text, Text)
 sampleChunk ctx = timeoutRetry $ do
@@ -64,7 +62,7 @@ sampleChunkWithPrompt ctx prompt = do
   let lctx = ctx <> prompt
   (newlctx, chunk) <- sampleChunk (ctx <> prompt)
   let newctx = T.dropEnd (T.length prompt) newlctx
-  return (T.dropEnd (T.length prompt) newlctx, chunk)
+  return (newctx, T.filter (isPrint ||| isSpace) chunk)
 
 sampleLine :: Text -> IO (Text, Text)
 sampleLine ctx = sampleLineWithPrompt ctx ""
@@ -75,19 +73,23 @@ sampleLineWithPrompt ctx partline = putStr "@" >> go ctx partline
   where
     go newctx partline
       | T.isInfixOf "\n" partline = pure (newctx, T.takeWhile (/= '\n') partline)
+      | T.length partline >= 600 = pure (newctx, partline)
       | otherwise = do (newctx, piece) <- sampleChunkWithPrompt newctx partline
                        go newctx (partline <> piece)
+
+maximumOn f xs = maximumBy (comparing f) xs
 
 sampleLineWithPrompt' :: Text -> Text -> IO (Text, Text)
 sampleLineWithPrompt' ctx prompt = putStr "#" >> go [] 32
   where
-    go samples maxn = do
+    go samples minnew = do
       (newctx, line) <- sampleLineWithPrompt ctx prompt
-      let n = length $ longestSubstring (T.unpack ctx) (T.unpack line)
-      if n > maxn then
-        T.putStrLn ("Failing sample with similarity " <> T.pack (show n) <> ": " <> line)
-        >> go ((n, line) : samples) (maxn+10)
+      let sim = length (longestSubstring (T.unpack ctx) (T.unpack line))
+          orig = T.length line - sim
+      if orig < minnew then
+        T.putStrLn ("Failing sample with similarity " <> T.pack (show sim) <> "/" <> T.pack (show orig) <> ": " <> line)
+        >> go ((orig, line) : samples) (minnew-10)
         else
-        do let (chosen_n, chosen_line) = head $ sort ((n, line) : samples)
+        do let (chosen_n, chosen_line) = maximumOn fst ((orig, line) : samples)
            -- T.putStrLn $ "Choosing sample with lcs=" <> T.pack (show chosen_n) <> ", innovation=" <> T.pack (show (T.length chosen_line - chosen_n)) <> ": " <> chosen_line
            return (newctx, chosen_line)

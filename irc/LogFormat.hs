@@ -83,3 +83,6 @@ sampleGwernpaste orig_ctx prompt = timeoutThrow $ do
         finish (ls ++ [line2])
     finish ls = return ls
   go []
+
+formatTimestamp :: UTCTime -> Text
+formatTimestamp time = T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" time)
