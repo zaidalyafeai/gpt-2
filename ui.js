@@ -34,7 +34,7 @@ function calc() {
 	prompt = document.querySelector('textarea#text');
 
 	var oReq = new XMLHttpRequest();
-	oReq.open("POST", "http://phenex.vpn:8000/predict", true);
+	oReq.open("POST", "http://localhost:8000/predict", true);
 	oReq.onload = reqListener;
 	oReq.send(prompt.value);
 

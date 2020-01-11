@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
+import os
+os.putenv('TF_CUDNN_USE_AUTOTUNE', '0')
+# Disable numpy deprecation messages
+import warnings
+warnings.simplefilter('ignore', category=DeprecationWarning)
+warnings.simplefilter('ignore', category=FutureWarning)
+# Disable tensorflow deprecation messages
+import tensorflow as tf
+import tensorflow.python.util.deprecation as deprecation
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+deprecation._PRINT_DEPRECATION_WARNINGS = False
 
 import argparse
 import json
-import os
 import numpy as np
-import tensorflow as tf
 
 import model, sample, encoder
 

@@ -25,7 +25,7 @@ formatTimestamp :: UTCTime -> Text
 formatTimestamp time = T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" time)
 
 timeoutRetry :: IO a -> IO a
-timeoutRetry m = do ma <- timeout (60 * 1000000) m
+timeoutRetry m = do ma <- timeout (10 * 1000000) m
                     case ma of
                       Just a -> pure a
                       Nothing -> putStrLn "Timed out while sampling chunk, retrying" >> timeoutRetry m
@@ -40,7 +40,7 @@ data Err = Err String
 instance Exception Err
 
 timeoutThrow :: IO a -> IO a
-timeoutThrow m = do ma <- timeout (180 * 1000000) m
+timeoutThrow m = do ma <- timeout (30 * 1000000) m
                     case ma of
                       Just a -> pure a
                       Nothing -> putStrLn "Timed out while sampling" >> throwIO Timeout
