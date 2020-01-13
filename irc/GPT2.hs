@@ -36,7 +36,7 @@ data Err = Err String
 instance Exception Err
 
 timeoutThrow :: IO a -> IO a
-timeoutThrow m = do ma <- timeout (120 * 1000000) m
+timeoutThrow m = do ma <- timeout (180 * 1000000) m
                     case ma of
                       Just a -> pure a
                       Nothing -> putStrLn "Timed out while sampling" >> throwIO Timeout

@@ -52,78 +52,78 @@ data Msg = Msg {
 -- New (feep) format
 -- =================
 
-parseNick :: Text -> Maybe Text
-parseNick "*" = Just "*"
-parseNick nick | T.isPrefixOf "<" nick && T.isSuffixOf ">" nick
-  = Just (T.drop 1 $ T.dropEnd 1 nick)
-parseNick _ = Nothing
+-- parseNick :: Text -> Maybe Text
+-- parseNick "*" = Just "*"
+-- parseNick nick | T.isPrefixOf "<" nick && T.isSuffixOf ">" nick
+--   = Just (T.drop 1 $ T.dropEnd 1 nick)
+-- parseNick _ = Nothing
 
-printNick :: Text -> Text
-printNick "*" = "*"
-printNick nick = "<" <> nick <> ">"
+-- printNick :: Text -> Text
+-- printNick "*" = "*"
+-- printNick nick = "<" <> nick <> ">"
 
-parseMsg :: Text -> Maybe Msg
-parseMsg line =
-  case T.breakOn "\t" line of
-    (n, msg) -> case parseNick n of
-      Just nick -> Just (Msg "" nick (T.drop 1 msg))
-      Nothing | T.null line -> Just (Msg "" "" "")
-      Nothing -> Nothing
+-- parseMsg :: Text -> Maybe Msg
+-- parseMsg line =
+--   case T.breakOn "\t" line of
+--     (n, msg) -> case parseNick n of
+--       Just nick -> Just (Msg "" nick (T.drop 1 msg))
+--       Nothing | T.null line -> Just (Msg "" "" "")
+--       Nothing -> Nothing
 
-formatMsg :: Msg -> Text
-formatMsg Msg{..} = printNick muser <> "\t" <> mtext
+-- formatMsg :: Msg -> Text
+-- formatMsg Msg{..} = printNick muser <> "\t" <> mtext
 
-formatPrompt :: Msg -> Text
-formatPrompt Msg{..}
-  | T.null muser && T.null mtext = ""
-  |                 T.null mtext = printNick muser
-  | otherwise                    = formatMsg Msg{..}
+-- formatPrompt :: Msg -> Text
+-- formatPrompt Msg{..}
+--   | T.null muser && T.null mtext = ""
+--   |                 T.null mtext = printNick muser
+--   | otherwise                    = formatMsg Msg{..}
 
 
 -- Shawwn format
 -- =============
 
--- parseMsg :: Text -> Maybe Msg
--- parseMsg line = parse p line
---   where
---     p = do
---       ts <- T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
---       char ' '
---       muser <- T.pack <$> (between (char '<') (char '>') (some (noneOf ['>']))
---                            <|> string "*"
---                            <|> string ">>")
---       char ' '
---       mtext <- T.pack <$> some (noneOf ['\n'])
---       return (Just (Msg ts muser mtext))
+parseMsg :: Text -> Maybe Msg
+parseMsg line = parse p line
+  where
+    p = do
+      ts <- T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
+      char ' '
+      muser <- T.pack <$> (between (char '<') (char '>') (some (noneOf ['>']))
+                           <|> string "*"
+                           <|> string ">>")
+      char ' '
+      mtext <- T.pack <$> some (noneOf ['\n'])
+      return (Just (Msg ts muser mtext))
 
--- squashTime :: Text -> Text
--- squashTime txt = parse p txt
---   where
---     p = long <|> short
---     long = do
---       try (replicateM 4 digit ## string "-" ## replicateM 2 digit ## string "-" ## replicateM 2 digit)
---       char ' '
---       hhmm <- T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
---       return hhmm
---     short = T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
+squashTime :: Text -> Text
+squashTime txt = parse p txt
+  where
+    p = long <|> short
+    long = do
+      try (replicateM 4 digit ## string "-" ## replicateM 2 digit ## string "-" ## replicateM 2 digit)
+      char ' '
+      hhmm <- T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
+      return hhmm
+    short = T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
 
--- formatMsg :: Msg -> Text
--- formatMsg Msg{..} = T.intercalate " " [ts, nick, mtext]
---   where
---     ts = squashTime mtime
---     nick | muser `elem` ["*", ">>"] = muser
---          | otherwise = "<" <> muser <> ">"
+formatMsg :: Msg -> Text
+formatMsg Msg{..} = T.intercalate " " [ts, nick, mtext]
+  where
+    ts = squashTime mtime
+    nick | muser `elem` ["*", ">>"] = muser
+         | otherwise = "<" <> muser <> ">"
 
--- formatPrompt :: Msg -> Text
--- formatPrompt m@Msg{..}
---   | T.null mtime && T.null muser && T.null mtext = ""
---   |                 T.null muser && T.null mtext = ts
---   |                                 T.null mtext = T.intercalate " " [ts, nick]
---   | otherwise = formatMsg m
---   where
---     ts = squashTime mtime
---     nick | muser `elem` ["*", ">>"] = muser
---          | otherwise = "<" <> muser <> ">"
+formatPrompt :: Msg -> Text
+formatPrompt m@Msg{..}
+  | T.null mtime && T.null muser && T.null mtext = ""
+  |                 T.null muser && T.null mtext = ts
+  |                                 T.null mtext = T.intercalate " " [ts, nick]
+  | otherwise = formatMsg m
+  where
+    ts = squashTime mtime
+    nick | muser `elem` ["*", ">>"] = muser
+         | otherwise = "<" <> muser <> ">"
 
 -----
 
