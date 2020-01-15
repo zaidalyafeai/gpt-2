@@ -79,6 +79,20 @@ def main():
                 text = enc.decode(out)
                 print(repr(raw_text), repr(text))
                 self.wfile.write(json.dumps({'text': [text], 'context': enc.decode(context_tokens)}).encode('utf-8'))
+            def do_GET(self):
+                print('GET', self.path)
+                if self.path == '/info':
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json; charset=UTF-8')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    info = {'model': args.model_name,
+                            'checkpoint': ckpt}
+                    self.wfile.write(json.dumps(info).encode('utf-8'))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
         server_address = ('', 8000)
         httpd = http.server.HTTPServer(server_address, Handler)
 

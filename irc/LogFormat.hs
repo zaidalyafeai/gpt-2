@@ -3,8 +3,9 @@
 
 module LogFormat where
 
-import           Control.Exception
-import           Control.Lens
+import           Control.Applicative
+import           Control.Exception hiding (try)
+import           Control.Monad
 import           Data.ByteString (ByteString)
 import           Data.Char
 import           Data.List
@@ -15,8 +16,12 @@ import qualified Data.Text.IO as T
 import           Data.Time.Clock
 import           Data.Time.Format
 import           System.Timeout
+import           Text.Parser.Char
+import           Text.Parser.Combinators
+
 
 import           GPT2
+import           Parse
 
 data Msg = Msg {
   mtime :: Text,
@@ -24,6 +29,9 @@ data Msg = Msg {
   mtext :: Text
   }
   deriving (Show)
+
+-- Old Format
+-- ==========
 
 -- parseMsg :: Text -> Maybe Msg
 -- parseMsg line =
@@ -39,6 +47,10 @@ data Msg = Msg {
 --   | T.null mtime && T.null muser && T.null mtext = ""
 --   | T.null muser && T.null mtext = mtime <> "\t"
 --   | otherwise = T.intercalate "\t" [mtime, muser, mtext]
+
+
+-- New (feep) format
+-- =================
 
 parseNick :: Text -> Maybe Text
 parseNick "*" = Just "*"
@@ -67,6 +79,54 @@ formatPrompt Msg{..}
   |                 T.null mtext = printNick muser
   | otherwise                    = formatMsg Msg{..}
 
+
+-- Shawwn format
+-- =============
+
+-- parseMsg :: Text -> Maybe Msg
+-- parseMsg line = parse p line
+--   where
+--     p = do
+--       ts <- T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
+--       char ' '
+--       muser <- T.pack <$> (between (char '<') (char '>') (some (noneOf ['>']))
+--                            <|> string "*"
+--                            <|> string ">>")
+--       char ' '
+--       mtext <- T.pack <$> some (noneOf ['\n'])
+--       return (Just (Msg ts muser mtext))
+
+-- squashTime :: Text -> Text
+-- squashTime txt = parse p txt
+--   where
+--     p = long <|> short
+--     long = do
+--       try (replicateM 4 digit ## string "-" ## replicateM 2 digit ## string "-" ## replicateM 2 digit)
+--       char ' '
+--       hhmm <- T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
+--       return hhmm
+--     short = T.pack <$> replicateM 2 digit ## string ":" ## replicateM 2 digit
+
+-- formatMsg :: Msg -> Text
+-- formatMsg Msg{..} = T.intercalate " " [ts, nick, mtext]
+--   where
+--     ts = squashTime mtime
+--     nick | muser `elem` ["*", ">>"] = muser
+--          | otherwise = "<" <> muser <> ">"
+
+-- formatPrompt :: Msg -> Text
+-- formatPrompt m@Msg{..}
+--   | T.null mtime && T.null muser && T.null mtext = ""
+--   |                 T.null muser && T.null mtext = ts
+--   |                                 T.null mtext = T.intercalate " " [ts, nick]
+--   | otherwise = formatMsg m
+--   where
+--     ts = squashTime mtime
+--     nick | muser `elem` ["*", ">>"] = muser
+--          | otherwise = "<" <> muser <> ">"
+
+-----
+
 sampleMessage :: Text -> IO (Text, Msg)
 sampleMessage ctx = sampleMessageWithPrompt ctx (Msg "" "" "")
 
@@ -84,8 +144,11 @@ sampleMessageWithPrompt ctx prompt = timeoutThrow $ putStr "/" >> go
       (newctx, line) <- sampleLineWithPrompt' ctx (formatPrompt prompt)
       case parseMsg line of
         Just msg
-          | checkOk line -> return (newctx, msg)
-        _ -> T.putStrLn ("Failing sample: " <> line) >> go
+          | not (checkOk line) ->
+              T.putStrLn ("Failing check: " <> line) >> go
+          | muser msg == ">>" && muser prompt /= ">>" ->
+              T.putStrLn ("Discarding >>: " <> line) >> go
+          | otherwise -> pure (newctx, msg)
 
 sampleGwernpaste :: Text -> Text -> IO [Msg]
 sampleGwernpaste orig_ctx prompt = timeoutThrow $ do

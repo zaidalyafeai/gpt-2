@@ -56,6 +56,17 @@ sampleChunk ctx = timeoutRetry $ do
       in return (newctx, text)
     Left msg -> throwIO (Err msg)
 
+getInfo :: IO (Text, Text)
+getInfo = timeoutRetry $ do
+  let url = "http://localhost:8000/info"
+  req <- Wreq.get url
+  case A.eitherDecode (req ^. Wreq.responseBody) of
+    Right (json :: A.Value) ->
+      let model = json ^?! A.key "model" . A._String
+          ckpt = json ^?! A.key "checkpoint" . A._String
+      in return (model, ckpt)
+    Left msg -> throwIO (Err msg)
+
 -- Returns sampled text from ctx <> prompt, as well as new truncation of ctx.
 sampleChunkWithPrompt :: Text -> Text -> IO (Text, Text)
 sampleChunkWithPrompt ctx prompt = do

@@ -2,18 +2,20 @@
 {-# Language RecordWildCards #-}
 {-# Language FlexibleContexts #-}
 {-# Language ScopedTypeVariables #-}
+{-# Language ViewPatterns #-}
 
 module Main where
 
 import           Control.Applicative
-import           Control.Monad.Catch (catch)
-import           Control.Exception (SomeException)
 import           Control.Concurrent
+import           Control.Exception (SomeException)
 import           Control.Lens
 import           Control.Monad
+import           Control.Monad.Catch (catch)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Class as S
 import           Data.ByteString (ByteString)
+import           Data.Char
 import           Data.Foldable
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -23,8 +25,8 @@ import           Data.Time.Format
 import           GHC.IO.Handle
 import           Network.IRC.CTCP
 import           Network.IRC.Client
-import           System.IO
 import           System.Exit
+import           System.IO
 
 import           GPT2
 import           LogFormat
@@ -38,13 +40,15 @@ data MyState = MyState {
   _stContext :: Text,
   _stLastWakeup :: Maybe UTCTime,
   _stLastChat :: UTCTime,
-  _stHasLink :: Int
+  _stHasLink :: Int,
+  _stPeriod :: Int
   }
 
 stContext f (MyState{..}) = (\_stContext -> MyState {..}) <$> f _stContext
 stLastWakeup f (MyState{..}) = (\_stLastWakeup -> MyState {..}) <$> f _stLastWakeup
 stLastChat f (MyState{..}) = (\_stLastChat -> MyState {..}) <$> f _stLastChat
 stHasLink f (MyState{..}) = (\_stHasLink -> MyState {..}) <$> f _stHasLink
+stPeriod f (MyState{..}) = (\_stPeriod -> MyState {..}) <$> f _stPeriod
 
 portalSeconds :: NominalDiffTime
 portalSeconds = 60 * 60 -- 1 hour
@@ -65,7 +69,10 @@ extendContext :: Msg -> IRC MyState ()
 extendContext msg = do
   let line = formatMsg msg <> "\n"
   stContext %= (<> line)
-  when (T.isInfixOf "http" line || T.isInfixOf "\t.g" line || T.isInfixOf "\t.wp" line) $
+  when (T.isInfixOf "http" (mtext msg)
+        || T.isPrefixOf ".g" (mtext msg)
+        || T.isPrefixOf ".wp" (mtext msg)
+        || T.isPrefixOf "!" (mtext msg)) $
     stHasLink %= (+1)
   newctx <- use stContext
   liftIO (T.writeFile "context.txt" newctx)
@@ -76,9 +83,10 @@ getCanSpeak = do
   lastWakeup <- use stLastWakeup
   lastChat <- use stLastChat
   ctx <- use stContext
+  period <- use stPeriod
   case lastWakeup of
     Just wk -> return ((diffUTCTime now wk <= portalSeconds)
-                       && (diffUTCTime now lastChat >= 15)
+                       && (diffUTCTime now lastChat >= fromIntegral period)
                        && T.isSuffixOf "\n" ctx)
     Nothing -> return False
 
@@ -133,7 +141,9 @@ cleanzwsp :: Text -> Text
 cleanzwsp = T.filter (/= '\x2060')
 
 sendMsg :: Channel -> Msg -> IRC MyState ()
-sendMsg chan Msg{..} = sendLine chan ("<" <> noping muser <> "> " <> mtext)
+sendMsg chan Msg{..}
+  | muser `elem` ["*", ">>"] = sendLine chan (muser <> " " <> noping mtext)
+  | otherwise = sendLine chan ("<" <> noping muser <> "> " <> mtext)
 
 sendLine :: Channel -> Text -> IRC MyState ()
 sendLine chan msg
@@ -159,15 +169,18 @@ gwernpaste chan prompt = void $ fork (go
         extendContext line
 
 completion :: Channel -> Text -> Text -> IRC MyState ()
-completion chan user prompt = do
+completion chan user prompt = void $ fork $ do
   ctx <- use stContext
   now <- liftIO getCurrentTime
-  let lctx = if T.isPrefixOf "<" prompt && T.isInfixOf ">" prompt then
-               let user' = T.takeWhile (/= '>') . T.drop 1 $ prompt
-                   prompt' = T.drop 2 . T.dropWhile (/= '>') $ prompt
-               in Msg (formatTimestamp now) user' prompt'
-             else
-               Msg (formatTimestamp now) user prompt
+  let
+    (part1, T.drop 1 -> part2) = T.break isSpace prompt
+    lctx
+        | T.isPrefixOf "<" part1 && T.isSuffixOf ">" part1 =
+            let user' = T.drop 1 $ T.dropEnd 1 $ part1
+                prompt' = part2
+            in Msg (formatTimestamp now) user' prompt'
+        | part1 `elem` ["*", ">>"] = Msg (formatTimestamp now) part1 part2
+        | otherwise = Msg (formatTimestamp now) user prompt
   (newctx, msg) <- liftIO (sampleMessageWithPrompt ctx lctx)
   sendMsg chan msg
   extendContext msg
@@ -179,6 +192,8 @@ getChannel (User u) = u
 getUser :: Source Text -> Text
 getUser (Channel ch u) = u
 getUser (User u) = u
+
+tshow x = T.pack (show x)
 
 main :: IO ()
 main = do
@@ -223,9 +238,24 @@ main = do
       handleMessage src (_, Right "@clear") = do
         stContext .= "\n"
         sendLine (getChannel src) "Forgotten."
-      handleMessage _ (_, Right "@reload") = do
-        disconnect
-        liftIO exitSuccess
+      handleMessage src (_, Right "@info") = do
+        (model, ckpt) <- liftIO getInfo
+        sendLine (getChannel src) ("GPT-2: model=" <> model <> " checkpoint=" <> ckpt)
+      handleMessage src (_, Right "@period") = do
+        period <- use stPeriod
+        sendLine (getChannel src) ("Speaking every " <> tshow period <> " seconds")
+      handleMessage src (_, Right msg)
+        | "@period " `T.isPrefixOf` msg = do
+            let p = T.drop (T.length "@period ") msg
+            if T.all isDigit p then do
+              let period = max 5 (read (T.unpack p)) :: Int
+              stPeriod .= period
+              sendLine (getChannel src) ("Speaking every " <> tshow period <> " seconds")
+              else do
+              sendLine (getChannel src) ("Expected an integer (minimum 5)")
+      -- handleMessage _ (_, Right "@reload") = do
+      --   disconnect
+      --   liftIO exitSuccess
       handleMessage src (_, Right msg)
         | T.isPrefixOf "@gwernpaste " msg
         = gwernpaste (getChannel src) (T.drop (T.length "@gwernpaste ") msg)
@@ -241,4 +271,4 @@ main = do
 
   now <- getCurrentTime
   oldctx <- T.readFile "context.txt" <|> return ""
-  runClient conn cfg (MyState oldctx Nothing now 0)
+  runClient conn cfg (MyState oldctx Nothing now 0 15)
