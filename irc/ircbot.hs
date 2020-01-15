@@ -8,10 +8,11 @@ module Main where
 
 import           Control.Applicative
 import           Control.Concurrent
+import           Control.Concurrent.MVar
 import           Control.Exception (SomeException)
 import           Control.Lens
 import           Control.Monad
-import           Control.Monad.Catch (catch)
+import           Control.Monad.Catch (catch, MonadMask(..), ExitCase(..))
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Class as S
 import           Data.ByteString (ByteString)
@@ -27,6 +28,7 @@ import           Network.IRC.CTCP
 import           Network.IRC.Client
 import           System.Exit
 import           System.IO
+import           System.IO.Unsafe
 
 import           GPT2
 import           LogFormat
@@ -40,18 +42,19 @@ data MyState = MyState {
   _stContext :: Text,
   _stLastWakeup :: Maybe UTCTime,
   _stLastChat :: UTCTime,
-  _stHasLink :: Int,
   _stPeriod :: Int
   }
 
 stContext f (MyState{..}) = (\_stContext -> MyState {..}) <$> f _stContext
 stLastWakeup f (MyState{..}) = (\_stLastWakeup -> MyState {..}) <$> f _stLastWakeup
 stLastChat f (MyState{..}) = (\_stLastChat -> MyState {..}) <$> f _stLastChat
-stHasLink f (MyState{..}) = (\_stHasLink -> MyState {..}) <$> f _stHasLink
 stPeriod f (MyState{..}) = (\_stPeriod -> MyState {..}) <$> f _stPeriod
 
 portalSeconds :: NominalDiffTime
 portalSeconds = 60 * 60 -- 1 hour
+
+delaySeconds :: MonadIO m => Int -> m ()
+delaySeconds n = liftIO (threadDelay (n * 1000000))
 
 shutupThread :: IRC MyState ()
 shutupThread = go False
@@ -65,15 +68,44 @@ shutupThread = go False
           | diffUTCTime now wk <= portalSeconds -> go True
         _ -> when awake (send (Privmsg kChannel (Right ("Shutting up...")))) >> go False
 
+withMVarIRC :: (MonadIO m, MonadMask m) => MVar a -> (a -> m a) -> m a
+withMVarIRC v k = do
+  let start = liftIO (takeMVar v)
+      end x (ExitCaseSuccess y) = liftIO (putMVar v y)
+      end x _ = liftIO (putMVar v x)
+      middle x = k x
+  fst <$> generalBracket start end middle
+
+feepbot :: Text -> IRC MyState ()
+feepbot nick = void . fork $ withMVarIRC lock $ \() -> do
+  delaySeconds 1
+  now <- liftIO getCurrentTime
+  ctx <- use stContext
+  let
+    prompt = Msg (formatTimestamp now) nick ""
+    go = do
+      (newctx, msg) <- sampleMessageWithPrompt ctx prompt
+      if ("Wikipedia" `T.isSuffixOf` mtext msg) then
+        putStrLn ("redrawing " ++ show msg) >> go
+        else
+        return (newctx, msg)
+  (newctx, msg) <- liftIO go
+  stContext .= (newctx <> formatMsg msg <> "\n")
+  sendMsg kChannel msg
+  where
+    lock :: MVar ()
+    lock = unsafePerformIO (newMVar ())
+
 extendContext :: Msg -> IRC MyState ()
 extendContext msg = do
   let line = formatMsg msg <> "\n"
   stContext %= (<> line)
   when (T.isInfixOf "http" (mtext msg)
         || T.isPrefixOf ".g" (mtext msg)
-        || T.isPrefixOf ".wp" (mtext msg)
-        || T.isPrefixOf "!" (mtext msg)) $
-    stHasLink %= (+1)
+        || T.isPrefixOf ".wp" (mtext msg)) $ do
+    feepbot "feepbot"
+  when (T.isPrefixOf "!" (mtext msg)) $ do
+    feepbot "Oborbot"
   newctx <- use stContext
   liftIO (T.writeFile "context.txt" newctx)
 
@@ -95,25 +127,6 @@ sampleThread = forever (go
                         `catch` (\(e :: GPT2.Timeout) -> sendLine kChannel "Timed out")
                         `catch` (\(e :: SomeException) -> liftIO (print e)))
   where
-    feepbot = do
-      hasLink <- use stHasLink
-      guard (hasLink > 0)
-      now <- liftIO getCurrentTime
-      ctx <- use stContext
-      let
-        prompt = Msg (formatTimestamp now) "feepbot" ""
-        go = do
-          (newctx, msg) <- sampleMessageWithPrompt ctx prompt
-          if ("Wikipedia" `T.isSuffixOf` mtext msg) then
-            putStrLn ("redrawing " ++ show msg) >> go
-            else
-            return (newctx, msg)
-      (newctx, msg) <- liftIO go
-      stContext .= (newctx <> formatMsg msg <> "\n")
-      sendMsg kChannel msg
-      stHasLink %= subtract 1
-      stLastChat .= now
-
     normal = do
       guard =<< getCanSpeak
       ctx <- use stContext
@@ -130,7 +143,7 @@ sampleThread = forever (go
 
     go = do
       liftIO (threadDelay (1 * 1000000))
-      feepbot <|> normal <|> pure()
+      normal <|> pure()
 
 noping :: Text -> Text
 noping us
@@ -271,4 +284,4 @@ main = do
 
   now <- getCurrentTime
   oldctx <- T.readFile "context.txt" <|> return ""
-  runClient conn cfg (MyState oldctx Nothing now 0 15)
+  runClient conn cfg (MyState oldctx Nothing now 15)
